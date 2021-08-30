@@ -2,7 +2,8 @@ library(shiny)
 library(bnlearn)
 library(gRain) # for exact inference
 library(tidyverse) # ggplot
-library(vroom)
+library(vroom) # for faster import of data
+library(Rgraphviz)
 
 
 # data 
@@ -43,11 +44,24 @@ dag <- model2network(paste0("[haz_incr][exp_incr][cap_incr]",
 # learn parameters
 bn_model <- bn.fit(dag, data = capital)
 
+# dag for display
+dag_disp <- model2network(paste0("[haz_incr][exp_incr][cap_incr]",
+                                 nodes_year_1, nodes_year_2,
+                                 "[Year 1\nhazard\nlevel|haz_incr:", parents_year_1, "]",
+                                 "[Payout\nYear 1|Year 1\nhazard\nlevel:exp_incr]",
+                                 "[capy1|Payout\nYear 1:cap_incr]",
+                                 "[Year 2\nhazard\nlevel|haz_incr:", parents_year_2, "]",
+                                 "[Payout\nYear 2|Year 2\nhazard\nlevel:exp_incr]",
+                                 "[capy2|Payout\nYear 2:cap_incr:capy1]"))
+
+
+
+
 
 # plot bn
 plotbn <- function(dag, cyclone_y1, cyclone_y2){
   
-  newnames <- nodes(dag)
+  newnames <- bnlearn::nodes(dag)
   newnames[newnames == "exp_incr"] <- "GDP\nincrease"
   newnames[newnames == "haz_incr"] <- "Hazard\nincrease"
   newnames[newnames == "cap_incr"] <- "Capital\nincrease"
@@ -60,10 +74,13 @@ plotbn <- function(dag, cyclone_y1, cyclone_y2){
   if (length(cyclone_y1) == length(cycl_year_1) & 
       length(cyclone_y2) == length(cycl_year_2)){ # all cyclones
     
-    graphviz.plot(dag,
-                  groups = list(cycl_year_1, cycl_year_2,
-                                c("Capital\nincrease", "GDP\nincrease", "Hazard\nincrease")),
-                  layout = "dot")
+    g <- graphviz.plot(dag,
+                      groups = list(cycl_year_1, cycl_year_2,
+                                    c("GDP\nincrease", "Hazard\nincrease", "Capital\nincrease"),
+                                    c("Year 1\nhazard\nlevel", "Capital\nYear 1", "Payout\nYear 1"),
+                                    c("Year 2\nhazard\nlevel", "Capital\nYear 2", "Payout\nYear 2")),
+                      layout = "dot",
+                      render = FALSE)
     
   } else {
     not_c1 <- cycl_year_1[!(cycl_year_1 %in% cyclone_y1)]
@@ -77,13 +94,22 @@ plotbn <- function(dag, cyclone_y1, cyclone_y2){
                    col = "grey",
                    textCol = "grey")
     
-    graphviz.plot(dag,
+    g <- graphviz.plot(dag,
                   highlight = hlight,
                   groups = list(cycl_year_1, cycl_year_2,
-                                c("Capital\nincrease", "GDP\nincrease", "Hazard\nincrease")),
-                  layout = "dot")
+                                c("GDP\nincrease", "Hazard\nincrease", "Capital\nincrease"),
+                                c("Year 1\nhazard\nlevel", "Capital\nYear 1", "Payout\nYear 1"),
+                                c("Year 2\nhazard\nlevel", "Capital\nYear 2", "Payout\nYear 2")),
+                  layout = "dot",
+                  render = FALSE)
     
   }
+
+  nodeRenderInfo(g) <- list(shape = list("Capital\nincrease" = "rectangle",
+                                         "GDP\nincrease" = "rectangle",
+                                         "Hazard\nincrease" = "rectangle"))
+  # edgeRenderInfo(g) <- list(lwd = 2)
+  renderGraph(g)    
 }
 
 
@@ -109,39 +135,71 @@ names(years) <-  c(2017, 2018)
 
 # ggplot
 plotcap <- function(dist, n_each) {
+  
+  if (min(dist$val) > 1800) {
+    lim <- 3000
+  } else {
+    lim <- 1800
+  }
+  
   ggplot(data = dist, mapping = aes(x = val, y = stat(count / n_each))) +
     geom_histogram(data = subset(dist, val < 0), fill = "red", col="grey",
-                   binwidth = 250, boundary = 0) +
-    geom_histogram(data = subset(dist, val >= 0), fill = "blue", col="grey",
-                   binwidth = 250, boundary = 0) +
+                   boundary = 0) +
+    geom_histogram(data = subset(dist, val >= 0), fill = "blue", col="grey", 
+                   boundary = 0) +
     facet_grid(cols = vars(haz),
                labeller = labeller(haz = haz_lab)) +
-    xlim(-1800, 1800) +
+    xlim(-lim, lim) +
     xlab("Capital Level (Million EUR)") + 
     ylab("Likelihood") +
-    ggtitle("Will capital levels be positive under the chosen capital increase") +
     theme(plot.title = element_text(hjust=0.5))
 }
 
 
 
 ui <- fluidPage(
+  
+  titlePanel("Storyline approach to the effects of tropical cyclones on the EUSF"),
+  
+  h4("Specify which cyclones to consider in the storyline:"),
+  
   sidebarLayout(
     sidebarPanel(
-           checkboxGroupInput("cyclone1", "Cyclones of first year", 
+           checkboxGroupInput("cyclone1", "Cyclones in first year", 
                               choices = cycl_year_1),
-           checkboxGroupInput("cyclone2", "Cyclones of second year", 
+           checkboxGroupInput("cyclone2", "Cyclones in second year", 
                               choices = cycl_year_2)
            ),
     mainPanel( plotOutput("bn"))
   ),
-  sidebarLayout(
-    sidebarPanel(
-           selectInput("year", "Year under consideration", years),
-           radioButtons("policy", "Capital increase in fund (policy)", 
-                        choices = cap_lab),
-           ),
-    mainPanel( plotOutput("figure"))
+  tabsetPanel(
+    tabPanel("Outcomes of specific policy options",
+      sidebarLayout(
+        sidebarPanel(
+               selectInput("year", "Year under consideration", years),
+               radioButtons("policy", "Capital increase in fund (policy)", 
+                            choices = cap_lab),
+               ),
+        mainPanel(
+          h4("Will capital levels be positive under the chosen capital increase?"),
+          plotOutput("figure")
+          )
+      ),
+    ),
+    tabPanel("What policy to take to achive positive capital value",
+      sidebarLayout(
+        sidebarPanel(
+          selectInput("year_p", "Year under consideration", years),
+          radioButtons("hazard_p", "Hazard increase pattern", 
+                       choices = names(haz_lab)),
+          h5("(Values are given in 30% margins up to 150%.)")
+        ),
+        mainPanel(
+          h4("Policy needed to retain capital positive with a certain probability:"),
+          tableOutput("table")
+        )
+      )
+    )
   )
 )
 
@@ -149,10 +207,11 @@ server <- function(input, output, session) {
   
   # bn part
   output$bn <- renderPlot({
-    plotbn(dag, input$cyclone1, input$cyclone2)
+    plotbn(dag_disp, input$cyclone1, input$cyclone2)
   }, res = 96)
   
-  # policy figures
+  
+  # 1st tab: policy figures
   policy <- reactive({input$policy})
   output$figure <- renderPlot({
     
@@ -164,7 +223,8 @@ server <- function(input, output, session) {
       bn_model$haz_incr <- haz_dist[[haz]]
       
       # realized capital value
-      evidence <- as.list(as.character(as.numeric(c(cycl_year_1 %in% input$cyclone1, cycl_year_2 %in% input$cyclone2))))
+      evidence <- as.list(as.character(as.numeric(c(cycl_year_1 %in% input$cyclone1, 
+                                                    cycl_year_2 %in% input$cyclone2))))
       names(evidence) <- c(cycl_year_1, cycl_year_2)
       evidence["cap_incr"] <- input$policy
       val <- cpdist(bn_model, nodes = input$year,
@@ -186,6 +246,50 @@ server <- function(input, output, session) {
     
     plotcap(dist_all, n_each)
   })
+  
+  
+  # 2nd tab: Which policy to take
+  output$table <- renderTable({
+    evidence <- as.list(as.character(as.numeric(c(cycl_year_1 %in% input$cyclone1, 
+                                                  cycl_year_2 %in% input$cyclone2))))
+    names(evidence) <- c(cycl_year_1, cycl_year_2)
+    
+    bn_model$haz_incr <- haz_dist[haz_name== input$hazard_p][[1]]
+    
+    result <- data.frame(NA, NA, NA, NA, NA)
+    
+    for (cap in cap_lab) {
+      
+      evidence["cap_incr"] <- cap
+      
+      val <- cpdist(bn_model, nodes = input$year_p,
+                    evidence = evidence,
+                    method = "lw")[[input$year_p]]
+      
+      prop <- sum(val >= 0) / length(val)
+      
+      if (prop >= 0.1 & is.na(result[1,1])) {
+        result[1, 1] <- paste0(cap, "% increase needed")
+      } 
+      if (prop >= 0.33 & is.na(result[1,2])) {
+        result[1, 2] <-  paste0(cap, "% increase needed")  
+      } 
+      if (prop >= 0.5 & is.na(result[1,3])) {
+        result[1, 3] <-  paste0(cap, "% increase needed")
+      } 
+      if (prop >= 0.67 & is.na(result[1,4])) {
+        result[1, 4] <-  paste0(cap, "% increase needed")
+      } 
+      if (prop >= 0.9 & is.na(result[1,5])) {
+        result[1, 5] <-  paste0(cap, "% increase needed") 
+      }
+      
+    }
+    
+    names(result) <- c("10%", "33%", "50%", "67%", "90%")
+    
+    result
+    }, colnames = TRUE)
   
 }
 
