@@ -1,28 +1,32 @@
-# add repository; needed especially when deploying to shinyapps.io
+# command to add repository; needed especially when deploying to shinyapps.io
 # options(repos = BiocManager::repositories())
 
+# packages
 library(shiny, warn.conflicts = FALSE) # app
 library(tidyverse, warn.conflicts = FALSE) # ggplot
 library(bnlearn, warn.conflicts = FALSE) # bn
-library(gRain, warn.conflicts = FALSE) # for exact inference
+library(gRain, warn.conflicts = FALSE) # for exact inference 
 library(Rgraphviz, warn.conflicts = FALSE) # additional options for figures
 
-# data 
+# data # pre-processed into rds files
 capital <- readRDS("capital_under_combs.rds") # main data 
 comb <- readRDS("combinations.rds")
+# if importing from original csv files:
+# capital <- read.csv("capital_under_combs.csv")
 # comb <- read.csv("combinations.csv", colClasses = "factor") # combinations
 
-# combining the data
+# combining the data into one dataframe
 n_scenario <- sum(capital$comb_number==0) # number of scenarios
 comb1 <- comb[rep(1:nrow(comb), each = n_scenario), ]
 names(comb1)[1] <- "scenario"
 capital <- cbind(capital, comb1)
 
-# cyclones
+# cyclones to consider
 cycl_year_1 <- c("Carlos", "Enawo", "Harvey", "Irma", "Maria", "Ophelia")
 cycl_year_2 <- c("Berguitta", "Fakir", "Isaac", 
                  "Helene", "Kirk", "Leslie", "Ava")
 
+# cleaning dataframe
 capital <- capital[c("capy1", "capy2", "haz_incr", "exp_incr", "cap_incr", 
                      cycl_year_1, cycl_year_2)]
 capital$haz_incr <- as.factor(capital$haz_incr)
@@ -30,7 +34,8 @@ capital$exp_incr <- as.factor(capital$exp_incr)
 capital$cap_incr <- as.factor(capital$cap_incr)
 
 
-# create DAG
+
+# create DAG # for inference, different from the one on display
 nodes_year_1 <- paste0("[", paste0(cycl_year_1, collapse="]["), "]")
 nodes_year_2 <- paste0("[", paste0(cycl_year_2, collapse="]["), "]")
 parents_year_1 <- paste0(cycl_year_1, collapse=":")
@@ -44,14 +49,14 @@ dag <- model2network(paste0("[haz_incr][exp_incr][cap_incr]",
                             parents_year_2, "]"))
 
 
-
- # learn parameters
+# learn parameters
 bn_model <- bn.fit(dag, data = capital)
 
+# delete dataframe because we won't be using it anymore
 rm(capital)
 
 
-# dag for display -> this will be a causal network, not necessarily a bn
+# DAG for display -> this will be a causal network, not necessarily a bn
 dag_disp <-
   model2network(paste0("[haz_incr][exp_incr][cap_incr]",
                        nodes_year_1, nodes_year_2,
@@ -66,9 +71,10 @@ dag_disp <-
 
 
 
-# plot bn
+# plot function for DAG
 plotbn <- function(dag, cyclone_y1, cyclone_y2){
   
+  # better names for nodes
   newnames <- bnlearn::nodes(dag)
   newnames[newnames == "exp_incr"] <- "GDP\nincrease"
   newnames[newnames == "haz_incr"] <- "Hazard\nincrease"
@@ -79,8 +85,9 @@ plotbn <- function(dag, cyclone_y1, cyclone_y2){
   dag <- rename.nodes(dag, newnames)
 
   
+  # if-else is for technical issues in highlighting
   if (length(cyclone_y1) == length(cycl_year_1) & 
-      length(cyclone_y2) == length(cycl_year_2)){ # all cyclones
+      length(cyclone_y2) == length(cycl_year_2)){ # all cyclones are chosen
     
     g <- graphviz.plot(dag,
                       groups = list(cycl_year_1, cycl_year_2,
@@ -127,7 +134,7 @@ plotbn <- function(dag, cyclone_y1, cyclone_y2){
 }
 
 
-# inputs to consider
+# prior inputs to consider for first tab
 low_increase <- array(c(0.4, 0.3, 0.2, 0.1, 0), 
                       dimnames = list(c(1, 3, 5, 7, 9)))
 uniform_increase <- array(c(0.2, 0.2, 0.2, 0.2, 0.2), 
@@ -146,11 +153,11 @@ haz_lab <- c("Low hazard increase more likely",
              "High hazard increase more likely")
 names(haz_lab) <- c("low", "uniform", "high")
 
-# years
+# years to consider 
 years <- c("capy1", "capy2")
 names(years) <-  c(2017, 2018)
 
-# ggplot
+# plot function for figures, using ggplot
 plotcap <- function(dist, n_each, detail = FALSE) {
   
   if (min(dist$val) > 1800) {
@@ -159,7 +166,7 @@ plotcap <- function(dist, n_each, detail = FALSE) {
     lim <- 1800
   }
   
-  if (detail == TRUE) {
+  if (detail == TRUE) { # when specifying prior probabilities
     ggplot(data = dist, mapping = aes(x = val, y = stat(count / n_each))) +
       geom_histogram(data = subset(dist, val < 0), fill = "red", col="grey",
                      boundary = 0) +
@@ -169,7 +176,7 @@ plotcap <- function(dist, n_each, detail = FALSE) {
       xlab("Capital Level (Million EUR)") + 
       ylab("Likelihood") +
       theme(plot.title = element_text(hjust=0.5))
-  } else { 
+  } else { # when using prespecified distributions
     ggplot(data = dist, mapping = aes(x = val, y = stat(count / n_each))) +
       geom_histogram(data = subset(dist, val < 0), fill = "red", col="grey",
                      boundary = 0) +
@@ -187,6 +194,8 @@ plotcap <- function(dist, n_each, detail = FALSE) {
 
 #################
 #################
+
+# App part
 
 ui <- fluidPage(
   
@@ -322,7 +331,7 @@ ui <- fluidPage(
       )
     ),
     
-    # 3rd tab
+    # third tab
     tabPanel("What policy to take to achive positive capital value",
       sidebarLayout(
         sidebarPanel(width = 6,
@@ -402,8 +411,6 @@ ui <- fluidPage(
   )
 )
 
-checked_cyclones <- c(NULL)
-
 
 #################
 #################
@@ -411,19 +418,19 @@ checked_cyclones <- c(NULL)
 
 server <- function(input, output, session) {
   
-  # render input panel
-  
+  # render input panel for cyclones
   output$input_cyclones_1 <- 
     renderUI({
       L <- vector("list", 6)
       for (i in 1:6) {
-        L[[i]] <- list(checkboxInput(cycl_year_1[i], cycl_year_1[i]),
-                       conditionalPanel(condition = paste0("input.", cycl_year_1[i], " == true"),
-                                        sliderInput(paste0(cycl_year_1[i], "_p"), 
-                                                    paste0("Probability of ", cycl_year_1[i]), 
-                                                    min = 0, max = 1, value = 1)
-                                        )
-                       )
+        L[[i]] <- 
+          list(checkboxInput(cycl_year_1[i], cycl_year_1[i]),
+               conditionalPanel(condition = paste0("input.", cycl_year_1[i], " == true"),
+                                sliderInput(paste0(cycl_year_1[i], "_p"), 
+                                            paste0("Probability of ", cycl_year_1[i]), 
+                                            min = 0, max = 1, value = 1)
+                                )
+               )
       }
       return(L)
     })
@@ -432,13 +439,14 @@ server <- function(input, output, session) {
     renderUI({
       L <- vector("list", 7)
       for (i in 1:7) {
-        L[[i]] <- list(checkboxInput(cycl_year_2[i], cycl_year_2[i]),
-                       conditionalPanel(condition = paste0("input.", cycl_year_2[i], " == true"),
-                                        sliderInput(paste0(cycl_year_2[i], "_p"), 
-                                                    paste0("Probability of ", cycl_year_2[i]), 
-                                                    min = 0, max = 1, value = 1)
-                                        )
-                       )
+        L[[i]] <- 
+          list(checkboxInput(cycl_year_2[i], cycl_year_2[i]),
+               conditionalPanel(condition = paste0("input.", cycl_year_2[i], " == true"),
+                                sliderInput(paste0(cycl_year_2[i], "_p"), 
+                                            paste0("Probability of ", cycl_year_2[i]), 
+                                            min = 0, max = 1, value = 1)
+                                )
+               )
       }
       return(L)
     })
@@ -490,7 +498,7 @@ server <- function(input, output, session) {
     })
   
   
-  # bn part
+  # drawing the DAG
   output$bn <- renderPlot({
     cycl1 <- c(NULL)
     cycl2 <- c(NULL)
@@ -541,7 +549,7 @@ server <- function(input, output, session) {
       val <- cpdist(bn_model, nodes = input$year,
                     evidence = evidence,
                     method = "lw")[[input$year]]
-      # add to dataframe
+      # add results to dataframe
       dist_all <-
         rbind(dist_all,
               cbind(val = val,
@@ -567,18 +575,22 @@ server <- function(input, output, session) {
       
     dist_all <- data.frame(val = NULL)
     
-    # change prior
-    bn_model$exp_incr <- array(c(input$exp_incr_1, input$exp_incr_6, input$exp_incr_11, 
-                                 input$exp_incr_16, input$exp_incr_21),
-                               dimnames = list(c("1", "6", "11", "16", "21")))
-    bn_model$haz_incr <- array(c(input$haz_incr_1, input$haz_incr_3, input$haz_incr_5, 
-                                 input$haz_incr_7, input$haz_incr_9),
-                               dimnames = list(c("1", "3", "5", "7", "9")))
+    # set priors
+    bn_model$exp_incr <- 
+      array(c(input$exp_incr_1, input$exp_incr_6, input$exp_incr_11,
+              input$exp_incr_16, input$exp_incr_21),
+            dimnames = list(c("1", "6", "11", "16", "21")))
+    
+    bn_model$haz_incr <- 
+      array(c(input$haz_incr_1, input$haz_incr_3, input$haz_incr_5, 
+              input$haz_incr_7, input$haz_incr_9),
+            dimnames = list(c("1", "3", "5", "7", "9")))
     
     for (cyc in c(cycl_year_1, cycl_year_2)) {
       if (input[[cyc]] == TRUE) {
-        bn_model[[cyc]] <- array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
-                                 dimnames = list(c("0", "1")))
+        bn_model[[cyc]] <- 
+          array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
+                dimnames = list(c("0", "1")))
       }
     }
     
@@ -615,18 +627,22 @@ server <- function(input, output, session) {
   # 3rd tab: Which policy to take
   draw_table <- eventReactive(input$click_p, {
     
-    # change prior
-    bn_model$exp_incr <- array(c(input$exp_incr_1_p, input$exp_incr_6_p, input$exp_incr_11_p, 
-                                 input$exp_incr_16_p, input$exp_incr_21_p),
-                               dimnames = list(c("1", "6", "11", "16", "21")))
-    bn_model$haz_incr <- array(c(input$haz_incr_1_p, input$haz_incr_3_p, input$haz_incr_5_p, 
-                                 input$haz_incr_7_p, input$haz_incr_9_p),
-                               dimnames = list(c("1", "3", "5", "7", "9")))
+    # set priors
+    bn_model$exp_incr <- 
+      array(c(input$exp_incr_1_p, input$exp_incr_6_p, input$exp_incr_11_p, 
+              input$exp_incr_16_p, input$exp_incr_21_p),
+            dimnames = list(c("1", "6", "11", "16", "21")))
+    
+    bn_model$haz_incr <- 
+      array(c(input$haz_incr_1_p, input$haz_incr_3_p, input$haz_incr_5_p, 
+              input$haz_incr_7_p, input$haz_incr_9_p),
+            dimnames = list(c("1", "3", "5", "7", "9")))
     
     for (cyc in c(cycl_year_1, cycl_year_2)) {
       if (input[[cyc]] == TRUE) {
-        bn_model[[cyc]] <- array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
-                                 dimnames = list(c("0", "1")))
+        bn_model[[cyc]] <- 
+          array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
+                dimnames = list(c("0", "1")))
       }
     }
     
@@ -634,6 +650,7 @@ server <- function(input, output, session) {
     result <- data.frame(NA, NA, NA, NA, NA)
     evidence <- vector(mode = "list")
     
+    # simulate for each capital level to determine sufficient level
     for (cap in cap_lab) {
       
       evidence["cap_incr"] <- cap
