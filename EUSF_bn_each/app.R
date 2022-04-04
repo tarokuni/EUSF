@@ -1,3 +1,5 @@
+### EUSF storyline
+
 # command to add repository; needed especially when deploying to shinyapps.io
 # options(repos = BiocManager::repositories())
 
@@ -7,6 +9,7 @@ library(tidyverse, warn.conflicts = FALSE) # ggplot
 library(bnlearn, warn.conflicts = FALSE) # bn
 library(gRain, warn.conflicts = FALSE) # for exact inference 
 library(Rgraphviz, warn.conflicts = FALSE) # additional options for figures
+library(patchwork)
 
 # data # pre-processed into rds files
 capital <- readRDS("capital_under_combs.rds") # main data 
@@ -134,6 +137,10 @@ plotbn <- function(dag, cyclone_y1, cyclone_y2){
 }
 
 
+#### For display without running app
+# plotbn(dag_disp, cycl_year_1, cycl_year_2)
+
+
 # prior inputs to consider for first tab
 low_increase <- array(c(0.4, 0.3, 0.2, 0.1, 0), 
                       dimnames = list(c(1, 3, 5, 7, 9)))
@@ -200,18 +207,34 @@ plotcap <- function(dist, n_each, detail = FALSE) {
 ui <- fluidPage(
   
   titlePanel("Storyline approach to the effects of tropical cyclones on the EUSF"),
+    
+  fluidRow(
+    column(3,
+      numericInput("n_cyclones", "How many cyclones would you like to randomly select in the storyline?", 
+                 value = 2, min = 0, max = 13, step = 1)
+    ),                      
+    column(3,
+           checkboxInput("MariaIrma", "Always include Irma and Maria (historical cyclones that caused payouts)", value = TRUE),
+    ),
+  ),
+  fluidRow(
+    column(4,
+           actionButton("choose_cyclone", "Randomly choose cyclones",
+                        class="btn btn-primary")
+    )
+  ),
   
-  h4(strong("Specify which cyclones to consider in the storyline:")),
+  h4(strong("Or specify which cyclones to consider in the storyline:")),
   
   sidebarLayout(
     sidebarPanel(width = 4,
       fluidRow(
         column(6,
-          h5(strong("Cyclones in first year - probability of each cyclone")),
+          h5(strong("Cyclones in first year - probability of each cyclone causing damage")),
           uiOutput("input_cyclones_1")
           ),
         column(6,
-          h5(strong("Cyclones in first year - probability of each cyclone")),
+          h5(strong("Cyclones in second year - probability of each cyclone causing damage")),
           uiOutput("input_cyclones_2")
           )
       )
@@ -229,28 +252,7 @@ ui <- fluidPage(
   tabsetPanel(
     
     # first tab
-    tabPanel("Outcomes of specific policy options",
-      column(12,
-        column(4,
-        h5(strong("NB: "), "We use a flat prior probability distribution for GDP increase,
-           and three different hazard increase probability distribution patterns.
-           To specify the prior probability distributions, choose the next tab.")
-        )
-      ),
-      sidebarLayout(
-        sidebarPanel(
-          selectInput("year", "Year under consideration", years),
-          radioButtons("policy", "Capital increase in fund (policy)", 
-                       choices = cap_lab),
-          ),
-        mainPanel(
-          h4("Will capital levels be positive under the chosen capital increase?"),
-          plotOutput("figure")
-          )
-      ),
-    ),
     
-    # second tab
     tabPanel("Outcomes of specific policy options (specify prior distributions)",
       sidebarLayout(
         sidebarPanel(width = 6,
@@ -325,11 +327,36 @@ ui <- fluidPage(
                      )
         ),
         mainPanel(width = 6,
-          h4("Will capital levels be positive under the chosen capital increase?"),
+          h4("Will capital levels be positive under the chosen capital increase? (Blue: positive, Red: negative)"),
           plotOutput("figure_d")
         )
       )
     ),
+    
+    
+    # second tab
+    tabPanel("Outcomes of specific policy options (preset prior distributions)",
+             column(12,
+                    column(4,
+                           h5(strong("NB: "), 
+                           "We use a flat prior probability distribution for GDP increase,
+           and three different hazard increase probability distribution patterns.
+           To specify the prior probability distributions, choose the previous tab.")
+                    )
+             ),
+             sidebarLayout(
+               sidebarPanel(
+                 selectInput("year", "Year under consideration", years),
+                 radioButtons("policy", "Capital increase in fund (policy)", 
+                              choices = cap_lab),
+               ),
+               mainPanel(
+                 h4("Will capital levels be positive under the chosen capital increase?"),
+                 plotOutput("figure")
+               )
+             ),
+    ),
+    
     
     # third tab
     tabPanel("What policy to take to achive positive capital value",
@@ -395,6 +422,11 @@ ui <- fluidPage(
                        column(3,
                               selectInput("year_p", "Year under consideration", years)
                        ),
+                       column(3,
+                              radioButtons("risk", "Risk-averseness",
+                                           choiceNames = c("risk neutral: want capital to remain positive half the time",
+                                                       "risk averse: want capital to remain positive 90% of the time"),
+                                           choiceValues = c("neutral", "averse"))),
                        column(4,
                               actionButton("click_p", "Show needed policy option",
                                            class="btn btn-primary")
@@ -403,55 +435,126 @@ ui <- fluidPage(
           h5("(Values are given in 30% margins up to 150%.)")
         ),
         mainPanel(width = 6,
-          h4("Policy needed to retain capital positive with a certain probability:"),
-          tableOutput("table")
-        )
+          h4("Policy of choice given risk-averseness:", strong(textOutput("riskpolicy", inline = TRUE))),
+          h5("cf. Policy needed to retain capital positive with a certain probability:"),
+          tableOutput("table"),
+          plotOutput("policy_choice"))
+          
       )
     )
   )
 )
 
 
+
+
+
 #################
 #################
+
+
+
 
 
 server <- function(input, output, session) {
   
-  # render input panel for cyclones
-  output$input_cyclones_1 <- 
-    renderUI({
-      L <- vector("list", 6)
-      for (i in 1:6) {
-        L[[i]] <- 
-          list(checkboxInput(cycl_year_1[i], cycl_year_1[i]),
-               conditionalPanel(condition = paste0("input.", cycl_year_1[i], " == true"),
-                                sliderInput(paste0(cycl_year_1[i], "_p"), 
-                                            paste0("Probability of ", cycl_year_1[i]), 
-                                            min = 0, max = 1, value = 1)
-                                )
-               )
+  year1_random <- c(F, F, F, T, T, F) # Irma and Maria
+  year2_random <- rep(FALSE, 7)
+
+  # Initialize number of cyclones
+  set_cyclones <- eventReactive(input$choose_cyclone, {
+    
+    if(input$MariaIrma){ # when checkbox is ticked
+      if (input$n_cyclones >= 2){
+        
+        if(input$n_cyclones > 13){
+          n_cyc <- 13
+        } else {
+          n_cyc <- input$n_cyclones
+        }
+        
+        which_cyclone <- rep(FALSE, 11)
+        which_cyclone[sample(11, n_cyc - 2)] <- TRUE
+
+        year1_random <- c(which_cyclone[1:3], T, T, which_cyclone[4])
+        year2_random <- which_cyclone[5:11]
+        
+      } else { # when number of cyclones is smaller than 2 but checkbox ticked
+        # just get the 2
+        year1_random <- c(F, F, F, T, T, F)
+        year2_random <- rep(FALSE, 7)
       }
-      return(L)
-    })
+      
+    } else {
+      which_cyclone <- rep(FALSE, 13)
+      if(input$n_cyclones > 13){
+        n_cyc <- 13
+      } else {
+        n_cyc <- input$n_cyclones
+      }
+      
+      which_cyclone[sample(13, n_cyc)] <- TRUE
+      
+      year1_random <- which_cyclone[1:6]
+      year2_random <- which_cyclone[7:13]
+    }
+    
+    list(year1_random, year2_random)
+    
+  }, ignoreNULL = FALSE)
   
-  output$input_cyclones_2 <- 
-    renderUI({
-      L <- vector("list", 7)
-      for (i in 1:7) {
-        L[[i]] <- 
-          list(checkboxInput(cycl_year_2[i], cycl_year_2[i]),
-               conditionalPanel(condition = paste0("input.", cycl_year_2[i], " == true"),
-                                sliderInput(paste0(cycl_year_2[i], "_p"), 
-                                            paste0("Probability of ", cycl_year_2[i]), 
-                                            min = 0, max = 1, value = 1)
-                                )
-               )
-      }
-      return(L)
-    })
-
-
+  
+  output$input_cyclones_1 <- renderUI({
+    year1_r <- set_cyclones()[[1]]
+    L <- vector("list", 6)
+    for (i in 1:6) {
+      L[[i]] <- 
+        list(checkboxInput(cycl_year_1[i], cycl_year_1[i], value = year1_r[i])
+             
+             ###
+             ### Turn on when imposing probabilities on cyclones (don't forget comma in above line)
+             ###
+             
+             # conditionalPanel(condition = paste0("input.", cycl_year_1[i], " == true"),
+             #                  sliderInput(paste0(cycl_year_1[i], "_p"), 
+             #                              paste0("Probability of ", cycl_year_1[i]), 
+             #                              min = 0, max = 1, value = 1)
+             # )
+             
+             ###
+             ###
+             ###
+        )
+    }
+    return(L)
+  })
+  output$input_cyclones_2 <- renderUI({
+    year2_r <- set_cyclones()[[2]]
+    L <- vector("list", 7)
+    for (i in 1:7) {
+      L[[i]] <- 
+        list(checkboxInput(cycl_year_2[i], cycl_year_2[i], value = year2_r[i])
+             
+             ###
+             ### Turn on when imposing probabilities on cyclones (don't forget comma in above line)
+             ###
+             
+             # conditionalPanel(condition = paste0("input.", cycl_year_2[i], " == true"),
+             #                  sliderInput(paste0(cycl_year_2[i], "_p"), 
+             #                              paste0("Probability of ", cycl_year_2[i]), 
+             #                              min = 0, max = 1, value = 1)
+             # )
+             
+             ###
+             ### 
+             ###
+        )
+    }
+    return(L)
+  })
+  
+  
+  
   # Warning signs for probability input  
   output$gdp_warning <- 
     renderUI({
@@ -526,23 +629,50 @@ server <- function(input, output, session) {
     
     for (haz in 1:3){
       
-      # change prior
-      bn_model$haz_incr <- haz_dist[[haz]]
-      for (cyc in c(cycl_year_1, cycl_year_2)) {
-        req(length(input[[cyc]]) > 0)
-        if (input[[cyc]] == TRUE) {
-          bn_model[[cyc]] <- array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
-                                   dimnames = list(c("0", "1")))
-        }
-      }
+      ###
+      ### Turn of when using probabilities for cyclones
+      ###
       
-      # (un)realized cyclones and capital value input
+      
+      # Realized/unrealized cyclones and capital value input
       evidence <- vector(mode = "list")
       for (cyc in c(cycl_year_1, cycl_year_2)) {
         if (input[[cyc]] == FALSE) {
           evidence[[cyc]] <- "0"
+        } else {
+          evidence[[cyc]] <- "1"
         }
       }
+      
+      
+      
+      ###
+      ### Turn on when imposing probabilities on cyclones 
+      ###
+      
+      # # change prior
+      # bn_model$haz_incr <- haz_dist[[haz]]
+      # for (cyc in c(cycl_year_1, cycl_year_2)) {
+      #   req(length(input[[cyc]]) > 0)
+      #   if (input[[cyc]] == TRUE) {
+      #     bn_model[[cyc]] <- array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
+      #                              dimnames = list(c("0", "1")))
+      #   }
+      # }
+      # 
+      # # (un)realized cyclones and capital value input
+      # evidence <- vector(mode = "list")
+      # for (cyc in c(cycl_year_1, cycl_year_2)) {
+      #   if (input[[cyc]] == FALSE) {
+      #     evidence[[cyc]] <- "0"
+      #   }
+      # }
+      
+      ###
+      ### 
+      ###
+      
+      
       evidence["cap_incr"] <- input$policy
       
       # Monte Carlo
@@ -586,21 +716,44 @@ server <- function(input, output, session) {
               input$haz_incr_7, input$haz_incr_9),
             dimnames = list(c("1", "3", "5", "7", "9")))
     
-    for (cyc in c(cycl_year_1, cycl_year_2)) {
-      if (input[[cyc]] == TRUE) {
-        bn_model[[cyc]] <- 
-          array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
-                dimnames = list(c("0", "1")))
-      }
-    }
+    ###
+    ### Turn off when imposing probabilities on cyclones 
+    ###
     
-    # (un)realized cyclones and capital value input
     evidence <- vector(mode = "list")
     for (cyc in c(cycl_year_1, cycl_year_2)) {
       if (input[[cyc]] == FALSE) {
         evidence[[cyc]] <- "0"
+      } else {
+        evidence[[cyc]] <- "1"
       }
     }
+    
+    
+    ###
+    ### Turn on when imposing probabilities on cyclones 
+    ###
+    
+    # for (cyc in c(cycl_year_1, cycl_year_2)) {
+    #   if (input[[cyc]] == TRUE) {
+    #     bn_model[[cyc]] <- 
+    #       array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
+    #             dimnames = list(c("0", "1")))
+    #   }
+    # }
+    # 
+    # # (un)realized cyclones and capital value input
+    # evidence <- vector(mode = "list")
+    # for (cyc in c(cycl_year_1, cycl_year_2)) {
+    #   if (input[[cyc]] == FALSE) {
+    #     evidence[[cyc]] <- "0"
+    #   }
+    # }
+    
+    ###
+    ###
+    ###
+    
     evidence["cap_incr"] <- input$policy_d
     
     # MonteCarlo
@@ -624,7 +777,141 @@ server <- function(input, output, session) {
   output$figure_d <-  renderPlot(draw_figure())
   
   
+  
+  
   # 3rd tab: Which policy to take
+  
+  draw_dist <- eventReactive(input$click_p, {
+
+    
+    # GDP
+    data <- tibble("GDP increase" = c("1%", "3%", "5%", "7%", "9%"), 
+                   "Probability" = c(input$haz_incr_1_p, input$haz_incr_3_p, input$haz_incr_5_p, 
+                                     input$haz_incr_7_p, input$haz_incr_9_p))  
+    data$`GDP increase` <- factor(data$`GDP increase`, levels = data$`GDP increase`)
+    plot2 <- ggplot(data = data, mapping = aes(x = `GDP increase`, y = `Probability`)) + 
+      geom_bar(stat = "identity") +
+      theme(aspect.ratio=1) +
+      ggtitle("GDP increase")
+    
+    # Hazard
+    data <- tibble("Hazard increase" = c("1%", "3%", "5%", "7%", "9%"), 
+                   "Probability" = c(input$exp_incr_1_p, input$exp_incr_6_p, input$exp_incr_11_p, 
+                                     input$exp_incr_16_p, input$exp_incr_21_p)) 
+    plot1 <- ggplot(data = data, mapping = aes(x = `Hazard increase`, y = `Probability`)) + 
+      geom_bar(stat = "identity") +
+      theme(aspect.ratio=1) +
+      ggtitle("Hazard intensity increase")
+    
+    
+    patchwork <- plot1 + plot2
+    
+    patchwork + plot_annotation(
+      title = "cf. Visualization of input probability distributions",
+      theme = theme(plot.title = element_text(size = 18))
+    )
+  })
+  
+  
+  output$policy_choice <- renderPlot(draw_dist())
+  
+  
+  output$riskpolicy <- eventReactive(input$click_p, {
+    
+    # set priors
+    bn_model$exp_incr <- 
+      array(c(input$exp_incr_1_p, input$exp_incr_6_p, input$exp_incr_11_p, 
+              input$exp_incr_16_p, input$exp_incr_21_p),
+            dimnames = list(c("1", "6", "11", "16", "21")))
+    
+    bn_model$haz_incr <- 
+      array(c(input$haz_incr_1_p, input$haz_incr_3_p, input$haz_incr_5_p, 
+              input$haz_incr_7_p, input$haz_incr_9_p),
+            dimnames = list(c("1", "3", "5", "7", "9")))
+    
+    
+    
+    
+    result <- data.frame(NA, NA, NA, NA, NA)
+    evidence <- vector(mode = "list")
+    
+    
+    ###
+    ### Turn off when imposing probabilities on cyclones 
+    ###
+    
+    for (cyc in c(cycl_year_1, cycl_year_2)) {
+      if (input[[cyc]] == FALSE) {
+        evidence[[cyc]] <- "0"
+      } else {
+        evidence[[cyc]] <- "1"
+      }
+    }
+    
+    ###
+    ### Turn on when imposing probabilities on cyclones 
+    ###
+    
+    # for (cyc in c(cycl_year_1, cycl_year_2)) {
+    #   if (input[[cyc]] == TRUE) {
+    #     bn_model[[cyc]] <- 
+    #       array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
+    #             dimnames = list(c("0", "1")))
+    #   }
+    # }
+    
+    ### This wasn't included in initial version, need check if really needed    
+    # for (cyc in c(cycl_year_1, cycl_year_2)) {
+    #   if (input[[cyc]] == FALSE) {
+    #     evidence[[cyc]] <- "0"
+    #   } 
+    # }
+    
+    
+    ###
+    ###
+    ###
+    
+    
+    # simulate for each capital level to determine sufficient level
+    for (cap in cap_lab) {
+      
+      evidence["cap_incr"] <- cap
+      
+      val <- cpdist(bn_model, nodes = input$year_p,
+                    evidence = evidence,
+                    method = "lw")[[input$year_p]]
+      
+      prop <- sum(val >= 0) / length(val)
+      
+      if (prop >= 0.1 & is.na(result[1,1])) {
+        result[1, 1] <- paste0(cap, "% increase needed")
+      } 
+      if (prop >= 0.33 & is.na(result[1,2])) {
+        result[1, 2] <-  paste0(cap, "% increase needed")  
+      } 
+      if (prop >= 0.5 & is.na(result[1,3])) {
+        result[1, 3] <-  paste0(cap, "% increase needed")
+      } 
+      if (prop >= 0.67 & is.na(result[1,4])) {
+        result[1, 4] <-  paste0(cap, "% increase needed")
+      } 
+      if (prop >= 0.9 & is.na(result[1,5])) {
+        result[1, 5] <-  paste0(cap, "% increase needed") 
+      }
+      
+    }
+    
+    if (input$risk == "neutral"){
+      return(result[1,3])
+    } else {
+      return(result[1,5])
+    }
+    
+  })
+  
+    
+    
   draw_table <- eventReactive(input$click_p, {
     
     # set priors
@@ -638,17 +925,49 @@ server <- function(input, output, session) {
               input$haz_incr_7_p, input$haz_incr_9_p),
             dimnames = list(c("1", "3", "5", "7", "9")))
     
-    for (cyc in c(cycl_year_1, cycl_year_2)) {
-      if (input[[cyc]] == TRUE) {
-        bn_model[[cyc]] <- 
-          array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
-                dimnames = list(c("0", "1")))
-      }
-    }
+    
     
     
     result <- data.frame(NA, NA, NA, NA, NA)
     evidence <- vector(mode = "list")
+    
+    
+    ###
+    ### Turn off when imposing probabilities on cyclones 
+    ###
+
+    for (cyc in c(cycl_year_1, cycl_year_2)) {
+      if (input[[cyc]] == FALSE) {
+        evidence[[cyc]] <- "0"
+      } else {
+        evidence[[cyc]] <- "1"
+      }
+    }
+    
+    ###
+    ### Turn on when imposing probabilities on cyclones 
+    ###
+    
+    # for (cyc in c(cycl_year_1, cycl_year_2)) {
+    #   if (input[[cyc]] == TRUE) {
+    #     bn_model[[cyc]] <- 
+    #       array(c(1 - input[[paste0(cyc, "_p")]],input[[paste0(cyc, "_p")]]),
+    #             dimnames = list(c("0", "1")))
+    #   }
+    # }
+    
+    ### This wasn't included in initial version, need check if really needed    
+    # for (cyc in c(cycl_year_1, cycl_year_2)) {
+    #   if (input[[cyc]] == FALSE) {
+    #     evidence[[cyc]] <- "0"
+    #   } 
+    # }
+    
+    
+    ###
+    ###
+    ###
+    
     
     # simulate for each capital level to determine sufficient level
     for (cap in cap_lab) {
